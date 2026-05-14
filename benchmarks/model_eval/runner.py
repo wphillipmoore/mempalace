@@ -289,7 +289,23 @@ def run(
             error=f"Dataset not found: {dataset_path}",
         )
     samples = load_jsonl(dataset_path)
-    labels_path = task_dir / (f"labels.{language}.jsonl" if language != "en" and (task_dir / f"labels.{language}.jsonl").exists() else "labels.jsonl")
+
+    # Prefer language-specific labels when present (memory_extraction scoring
+    # compares model output against ground truth — when the model extracts in
+    # the input language but the ground truth stays English, cosine similarity
+    # collapses to noise). Fall back to English with an explicit log so the
+    # source of any score gap is visible to whoever reads results.
+    lang_labels = task_dir / f"labels.{language}.jsonl"
+    if language != "en" and lang_labels.exists():
+        labels_path = lang_labels
+    else:
+        labels_path = task_dir / "labels.jsonl"
+        if language != "en":
+            print(
+                f"  info: language={language} labels=labels.jsonl "
+                f"(no labels.{language}.jsonl found — scoring against English ground truth)",
+                file=sys.stderr, flush=True,
+            )
     labels = load_jsonl(labels_path)
     if len(samples) != len(labels):
         return Result(

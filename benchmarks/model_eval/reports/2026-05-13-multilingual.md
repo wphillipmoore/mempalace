@@ -1,7 +1,7 @@
 # Multilingual Benchmark — 2026-05-13 (Mercurio)
 
-**6 local models × 7 languages × 5 tasks = 210 runs**  
-Hardware: RTX 3080 Laptop 8 GB · Ollama 0.23.3  
+**6 local models × 7 languages × 5 tasks = 210 runs**
+Hardware: RTX 3080 Laptop 8 GB · Ollama 0.23.3
 Embed model: `nomic-embed-text` · Dataset: n=20 (calibration), n=40 (memory/entity), n=101 (room)
 
 ---
@@ -15,7 +15,7 @@ Embed model: `nomic-embed-text` · Dataset: n=20 (calibration), n=40 (memory/ent
 | gemma4-e4b      | gemma4:e4b                                   | q4_K_M |
 | classifier-q8   | igorls/gemma4-e4b-classifier:Q8_0            | q8_0   |
 | classifier-q4   | igorls/gemma4-e4b-classifier:latest          | q4_K_M |
-| heretic-q4      | igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M   | q4_K_M |
+| heretic-q4      | igorls/gemma-4-E4B-it-heretic-GGUF:Q4_K_M    | q4_K_M |
 
 ---
 
@@ -30,13 +30,13 @@ Embed model: `nomic-embed-text` · Dataset: n=20 (calibration), n=40 (memory/ent
 | qwen3-4b-q8    | 0.781 | 0.645      | 0.665   | **161 ms**    |
 | heretic-q4     | 0.787 | 0.644      | 0.664   | 272 ms        |
 
-`classifier-q8` lidera em accuracy (+2.6 pp vs heretic no all avg).  
-`qwen3-4b-q8` é 2–3× mais rápido em tasks simples e 3.º em accuracy.  
-`gemma4-e4b` e `gemma4-e4b-q4` são estatisticamente equivalentes (dentro do ruído).
+`classifier-q8` leads on accuracy (+2.6 pp over heretic on all avg).
+`qwen3-4b-q8` is 2–3× faster on simple tasks and ranks 3rd on accuracy.
+`gemma4-e4b` and `gemma4-e4b-q4` are statistically equivalent (within noise).
 
 ---
 
-## Por tarefa
+## By task
 
 ### Room Classification — closed-set
 
@@ -49,7 +49,7 @@ Embed model: `nomic-embed-text` · Dataset: n=20 (calibration), n=40 (memory/ent
 | heretic-q4     | 0.624 | 0.594 | 0.594 | 0.545 | 0.564 | 0.594 | 0.604 | 0.588 |
 | qwen3-4b-q8    | 0.624 | 0.564 | 0.554 | 0.554 | 0.535 | 0.554 | 0.564 | 0.564 |
 
-Queda média EN→non-EN: ~3–6 pp. Distribuição uniforme entre idiomas — nenhuma língua é outlier.
+Average EN→non-EN drop: ~3–6 pp. Uniform distribution across languages — no outlier locale.
 
 ### Room Classification — open-set
 
@@ -62,8 +62,8 @@ Queda média EN→non-EN: ~3–6 pp. Distribuição uniforme entre idiomas — n
 | heretic-q4     | 0.627 | 0.605 | 0.603 | 0.629 | 0.601 | 0.639 | 0.644 | 0.621 |
 | qwen3-4b-q8    | 0.603 | 0.572 | 0.562 | 0.599 | 0.570 | 0.581 | 0.559 | 0.578 |
 
-Open-set é mais estável que closed-set entre idiomas — a cosine similarity absorve variações de phrasing melhor que exact-match.  
-Gemma4 lidera abertamente; qwen3 fica ~6 pp abaixo.
+Open-set is more stable across languages than closed-set — cosine similarity absorbs phrasing variation better than exact match.
+Gemma4 clearly leads; qwen3 trails by ~6 pp.
 
 ### Entity Extraction
 
@@ -76,9 +76,9 @@ Gemma4 lidera abertamente; qwen3 fica ~6 pp abaixo.
 | gemma4-e4b-q4  | 0.748 | 0.663 | 0.760 | 0.736 | 0.773 | 0.712 | 0.729 | 0.732 |
 | classifier-q4  | 0.723 | 0.680 | 0.756 | 0.733 | 0.745 | 0.698 | 0.708 | 0.720 |
 
-A task mais robusta entre idiomas — queda de apenas ~3–5 pp EN→non-EN.  
-**qwen3** e **heretic** empatam na liderança. FR e IT frequentemente superam EN (provável efeito de dados de treino mais ricos nessas línguas).  
-KO e DE são os idiomas mais difíceis aqui.
+The most robust task across languages — only a ~3–5 pp EN→non-EN drop.
+**qwen3** and **heretic** tie for the lead. FR and IT often beat EN (likely an effect of richer training data in those languages).
+KO and DE are the hardest languages here.
 
 ### Memory Extraction ⚠️
 
@@ -91,11 +91,13 @@ KO e DE são os idiomas mais difíceis aqui.
 | gemma4-e4b     | 0.912 | 0.312 | 0.450 | 0.400 | 0.450 | 0.375 | 0.188 | −0.550      |
 | gemma4-e4b-q4  | 0.912 | 0.312 | 0.438 | 0.400 | 0.463 | 0.362 | 0.188 | −0.552      |
 
-**Esta é a tarefa crítica.** Todos os modelos colapsam ~0.52–0.63 pp de EN para não-EN.  
-`classifier-q8` tem o menor drop (−0.517) e o melhor não-EN abs (0.375 avg).  
-RU e DE são os piores — possivelmente efeito do embedding (`nomic-embed-text` tem sinal fraco para pares EN↔RU/DE em extração de memória, como documentado no PR #1483).
+**This is the critical task.** Every model collapses ~0.52–0.63 pp from EN to non-EN.
+`classifier-q8` has the smallest drop (−0.517) and the best non-EN absolute (0.375 avg).
+RU and DE are the worst — likely an embedding artifact (`nomic-embed-text` has weak signal on EN↔RU/DE pairs in memory extraction, as documented in PR #1483).
 
-> **Nota metodológica**: os scores de memory_extraction usam cosine similarity via `nomic-embed-text`. Para pares de idiomas distantes (RU, DE), o modelo de embedding pode estar subestimando a cobertura real — veja PR #1483 para a comparação com `embeddinggemma`.
+> **Methodology note**: memory_extraction scores use cosine similarity via `nomic-embed-text`. For distant language pairs (RU, DE), the embedding model may be underestimating real coverage — see PR #1483 for a comparison with `embeddinggemma`.
+>
+> A follow-up methodology fix in this PR adds `labels.ko.jsonl` so KO scores are computed against Korean ground truth instead of English. The numbers above predate that change; expect KO `memory_extraction` to recover meaningfully once `labels.{lang}.jsonl` exists for every language.
 
 ### Calibration
 
@@ -108,11 +110,11 @@ RU e DE são os piores — possivelmente efeito do embedding (`nomic-embed-text`
 | qwen3-4b-q8    | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 |
 | heretic-q4     | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 | 0.950 |
 
-Calibração é praticamente language-agnostic — sinal limpo, sem surpresas.
+Calibration is effectively language-agnostic — clean signal, no surprises.
 
 ---
 
-## Ranking por idioma (all-tasks avg)
+## Per-language ranking (all-tasks avg)
 
 | locale | best model     | score | worst model   | score |
 |:------:|:-------------- |:-----:|:------------- |:-----:|
@@ -124,11 +126,11 @@ Calibração é praticamente language-agnostic — sinal limpo, sem surpresas.
 | ko     | classifier-q8  | 0.680 | heretic-q4    | 0.647 |
 | ru     | classifier-q8  | 0.641 | heretic-q4    | 0.608 |
 
-`classifier-q8` lidera em todos os 7 idiomas. RU é o idioma mais difícil globalmente.
+`classifier-q8` leads in all 7 languages. RU is globally the hardest language.
 
 ---
 
-## Velocidade (e2e_p50 ms — calibration como proxy de latência base)
+## Speed (e2e_p50 ms — calibration as a baseline-latency proxy)
 
 | model          | en   | de   | fr   | hi   | it   | ko   | ru   |
 |:-------------- |:----:|:----:|:----:|:----:|:----:|:----:|:----:|
@@ -139,16 +141,16 @@ Calibração é praticamente language-agnostic — sinal limpo, sem surpresas.
 | gemma4-e4b-q4  | 633  | 633  | 610  | 459  | 312  | 434  | 366  |
 | classifier-q8  | 662  | 643  | 669  | 437  | 433  | 395  | 354  |
 
-`qwen3-4b-q8` é **2.5–4× mais rápido** que todos os modelos Gemma4 na latência base, apesar do q8_0. Idiomas com scripts não-latinos (HI, KO, RU) geram menos tokens por prompt → latências menores.
+`qwen3-4b-q8` is **2.5–4× faster** than every Gemma4 variant on baseline latency, despite running at q8_0. Non-Latin scripts (HI, KO, RU) generate fewer tokens per prompt, which is why their latencies are lower.
 
 ---
 
-## Recomendações
+## Recommendations
 
-**Para produção (melhor accuracy):** `classifier-q8` — lidera em todos os idiomas e tem o menor drop em memory_extraction não-EN. Custo: 2× mais lento que qwen3.
+**For production (best accuracy):** `classifier-q8` — leads in every language and has the smallest non-EN drop on memory_extraction. Cost: 2× slower than qwen3.
 
-**Para edge / 8 GB apertado:** `classifier-q4` ou `qwen3-4b-q8` — accuracy próxima, 2–3× mais rápidos. qwen3 domina entity extraction; classifier-q4 domina room-open.
+**For edge / tight-8 GB tier:** `classifier-q4` or `qwen3-4b-q8` — close accuracy, 2–3× faster. qwen3 dominates entity extraction; classifier-q4 dominates room-open.
 
-**gemma4-e4b vs gemma4-e4b-q4:** diferença < 0.003 em todos os scores — dentro do ruído estatístico. Prefira `q4_K_M` para poupar ~2 GB de VRAM.
+**gemma4-e4b vs gemma4-e4b-q4:** difference < 0.003 across every score — within statistical noise. Prefer `q4_K_M` to save ~2 GB of VRAM.
 
-**Memory extraction não-EN:** o colapso é universal (−0.5 a −0.63 pp). Antes de descartar, re-rodar com `--embed-model embeddinggemma` (ver PR #1483) para separar efeito de scoring vs. efeito de modelo.
+**Non-EN memory extraction:** the collapse is universal (−0.5 to −0.63 pp). Before discarding any model, re-run with `--embed-model embeddinggemma` (see PR #1483) to separate scoring effects from model behavior, and ensure `labels.{lang}.jsonl` exists for every language so the ground truth is in the right language.

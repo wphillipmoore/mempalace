@@ -12,6 +12,13 @@ identifiers the model must emit regardless of input language.
 
 Proper nouns (fictional names, places, orgs, projects, tech terms, code blocks)
 are preserved verbatim in the translated output.
+
+⚠️  PRIVACY NOTE: The default model (`kimi-k2.6:cloud`) sends the prose to a
+remote Ollama-hosted endpoint. This is fine for the synthetic benchmark
+fixtures in this repo, but DO NOT run this script over real user data
+(diary entries, conversation transcripts, palace drawers). MemPalace is
+local-first by design — for real data, pass `--model` pointing to a
+locally-hosted model (e.g. `qwen3:4b-instruct-2507-q8_0`).
 """
 from __future__ import annotations
 
@@ -107,16 +114,22 @@ def translate(text: str, language_name: str, model: str, endpoint: str) -> str:
 
 
 def _translate_one(args: tuple) -> tuple[int, str, str]:
-    """Worker: translate one sample. Returns (index, sample_id, translated_text)."""
+    """Worker: translate one sample. Returns (index, sample_id, translated_text).
+
+    Retries up to 3 times; on persistent failure returns the English source
+    so downstream code always has a string to work with (the sweep in
+    `translate_file` will warn about identical pairs).
+    """
     idx, sample_id, text, language_name, model, endpoint = args
-    for attempt in range(3):
+    last_error: Exception | None = None
+    for _ in range(3):
         try:
             return idx, sample_id, translate(text, language_name, model, endpoint)
         except Exception as e:
-            if attempt == 2:
-                print(f"    ERROR on {sample_id}: {e}", file=sys.stderr, flush=True)
-                return idx, sample_id, text  # fall back to English
+            last_error = e
             time.sleep(2)
+    print(f"    ERROR on {sample_id}: {last_error}", file=sys.stderr, flush=True)
+    return idx, sample_id, text  # fall back to English source
 
 
 def translate_file(
@@ -172,10 +185,10 @@ def main() -> None:
     parser.add_argument("--force", action="store_true", help="Overwrite existing output files")
     args = parser.parse_args()
 
-    langs = [l.strip() for l in args.languages.split(",") if l.strip()]
+    langs = [code.strip() for code in args.languages.split(",") if code.strip()]
     tasks = list(TASK_TEXT_FIELD.keys()) if args.tasks == "all" else [t.strip() for t in args.tasks.split(",")]
 
-    unknown_langs = [l for l in langs if l not in LANGUAGE_NAMES]
+    unknown_langs = [code for code in langs if code not in LANGUAGE_NAMES]
     if unknown_langs:
         print(f"Unknown language codes: {unknown_langs}. Add them to LANGUAGE_NAMES in this script.", file=sys.stderr)
         sys.exit(1)

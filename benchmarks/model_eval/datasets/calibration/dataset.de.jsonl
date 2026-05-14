@@ -14,7 +14,7 @@
 {"id": "cal_014", "text": "Das Deployment war eine Katastrophe!", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
 {"id": "cal_015", "text": "Die Bestäuber-Erhebung identifizierte sieben heimische Bienenarten.", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
 {"id": "cal_016", "text": "Lösche die veralteten Branches vom Remote.", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
-{"id": "cal_017", "text": "Hey, Aria.", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
+{"id": "cal_017", "text": "Hallo, Aria.", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
 {"id": "cal_018", "text": "Wow, der Latenzabfall ist riesig!", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
 {"id": "cal_019", "text": "Können Sie das dritte Paper zusammenfassen?", "classes": ["question", "command", "statement", "exclamation", "greeting"]}
 {"id": "cal_020", "text": "Der Kontenplan verwendet nun eine vierstellige Hierarchie.", "classes": ["question", "command", "statement", "exclamation", "greeting"]}

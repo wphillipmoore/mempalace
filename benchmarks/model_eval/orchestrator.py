@@ -18,6 +18,7 @@ import argparse
 import csv
 import dataclasses
 import json
+import socket
 import sys
 import time
 from dataclasses import asdict
@@ -205,7 +206,8 @@ def main():
 
     # Resolve output path(s). --output-dir writes one CSV per language so results
     # from long multilingual runs stay grouped by locale and are easier to diff.
-    import socket
+    # --output writes everything to one CSV (one shared file handle to avoid
+    # interleaved buffer corruption across languages).
     _host = socket.gethostname()
     _date = time.strftime("%Y-%m-%d")
 
@@ -214,23 +216,30 @@ def main():
             return args.output_dir / language / f"{_date}-{_host}.csv"
         return args.output
 
-    # Pre-create all output files (headers written before the first run starts).
     lang_files: dict[str, tuple] = {}
-    seen_paths: set[Path] = set()
-    for lang in languages:
-        p = _csv_path(lang)
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if p not in seen_paths:
+    if args.output_dir:
+        # One file per language — no path collisions possible.
+        for lang in languages:
+            p = _csv_path(lang)
+            p.parent.mkdir(parents=True, exist_ok=True)
             fh = open(p, "w", newline="", encoding="utf-8")
             w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
             w.writeheader()
             fh.flush()
-            seen_paths.add(p)
-        else:
-            fh = open(p, "a", newline="", encoding="utf-8")
-            w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
-        lang_files[lang] = (fh, w, p)
-        print(f"  {lang} → {p}")
+            lang_files[lang] = (fh, w)
+            print(f"  {lang} → {p}")
+    else:
+        # Single shared file — open once, share the same (fh, writer) for every
+        # language so writes don't fight over independent buffer offsets.
+        p = args.output
+        p.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(p, "w", newline="", encoding="utf-8")
+        w = csv.DictWriter(fh, fieldnames=CSV_COLUMNS)
+        w.writeheader()
+        fh.flush()
+        for lang in languages:
+            lang_files[lang] = (fh, w)
+        print(f"  output → {p}")
 
     rows = []
     total = n_runs
@@ -242,7 +251,7 @@ def main():
             tag = candidate["tag"]
             for task, mode in task_modes:
                 for language in languages:
-                    fh, writer, out_path = lang_files[language]
+                    fh, writer = lang_files[language]
                     i += 1
                     print(f"[{i}/{total}] {tag}  {task}  {mode}  lang={language}", flush=True)
                     try:
@@ -271,7 +280,13 @@ def main():
                     fh.flush()
                     print(f"  acc={row['accuracy']}  e2e_p50={row['e2e_p50_ms']}ms  vram={row['vram_resident_mb']}", flush=True)
     finally:
-        for fh, _, _ in lang_files.values():
+        # In --output mode every language maps to the same fh; dedupe by id to
+        # avoid double-close.
+        seen_fhs: set[int] = set()
+        for fh, _ in lang_files.values():
+            if id(fh) in seen_fhs:
+                continue
+            seen_fhs.add(id(fh))
             fh.close()
 
     elapsed = time.time() - start
