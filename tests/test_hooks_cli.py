@@ -1036,14 +1036,45 @@ def test_mine_already_running_live_pid(tmp_path):
 
 
 def test_mine_already_running_live_pid_bare_format(tmp_path):
-    """Old bare-PID format (no timestamp) is still recognized as alive."""
+    """Old bare-PID format uses file mtime for the stale-by-age check."""
     pid_dir = tmp_path / "mine_pids"
     cmd = ["mempalace", "mine", "/tmp/x", "--mode", "projects"]
     _seed_slot(pid_dir, cmd, str(os.getpid()))  # old format: bare PID
     with patch("mempalace.hooks_cli._MINE_PID_DIR", pid_dir):
-        # No timestamp → treated as start_ts=0 (infinitely old) → stale.
-        # Verify that the default 2 h timeout fires and returns False.
+        assert _mine_already_running(cmd) is True
+
+
+def test_mine_already_running_bare_pid_old_mtime_is_stale(tmp_path):
+    """Old bare-PID slots are reclaimed once their file mtime exceeds timeout."""
+    import time as _time
+
+    pid_dir = tmp_path / "mine_pids"
+    cmd = ["mempalace", "mine", "/tmp/x", "--mode", "projects"]
+    slot = _seed_slot(pid_dir, cmd, str(os.getpid()))
+    old_mtime = _time.time() - 3601
+    os.utime(slot, (old_mtime, old_mtime))
+    with (
+        patch("mempalace.hooks_cli._MINE_PID_DIR", pid_dir),
+        patch.dict("os.environ", {"MEMPALACE_MINE_TIMEOUT_HOURS": "1"}),
+    ):
         assert _mine_already_running(cmd) is False
+
+
+def test_mine_already_running_malformed_timestamp_is_stale(tmp_path):
+    """Malformed timestamps fail soft instead of crashing hook execution."""
+    pid_dir = tmp_path / "mine_pids"
+    cmd = ["mempalace", "mine", "/tmp/x", "--mode", "projects"]
+    _seed_slot(pid_dir, cmd, f"{os.getpid()} not-a-timestamp")
+    with patch("mempalace.hooks_cli._MINE_PID_DIR", pid_dir):
+        assert _mine_already_running(cmd) is False
+
+
+def test_mine_slot_timeout_invalid_env_disables_timeout():
+    """Invalid MEMPALACE_MINE_TIMEOUT_HOURS disables stale-by-age checks."""
+    from mempalace.hooks_cli import _mine_slot_timeout_secs
+
+    with patch.dict("os.environ", {"MEMPALACE_MINE_TIMEOUT_HOURS": "nope"}):
+        assert _mine_slot_timeout_secs() == 0.0
 
 
 def test_mine_already_running_live_pid_exceeds_timeout(tmp_path):

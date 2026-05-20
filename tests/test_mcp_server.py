@@ -2309,6 +2309,14 @@ class TestKGLazyCache:
         )
         assert add_result.get("success") is True, add_result
 
+        monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_b))
+        query_b = mcp_server.tool_kg_query(entity="alice_secret")
+        assert query_b.get("count", 0) == 0, f"tenant B leaked tenant A's fact: {query_b}"
+
+        monkeypatch.setenv("MEMPALACE_PALACE_PATH", str(tmp_a))
+        query_a = mcp_server.tool_kg_query(entity="alice_secret")
+        assert query_a.get("count", 0) >= 1, f"tenant A lost its own fact: {query_a}"
+
 
 # ── Structured error codes + MineAlreadyRunning (#1552) ─────────────────
 
@@ -2410,6 +2418,13 @@ class TestStructuredErrors:
         assert result["success"] is False
         assert "another mine is in progress" in result["error"]
         assert result.get("error_class") == "LockHeldByOtherProcess"
+
+    def test_mcp_idle_timeout_invalid_env_disables_watchdog(self, monkeypatch):
+        """Invalid MEMPALACE_MCP_IDLE_HOURS disables idle auto-exit."""
+        from mempalace import mcp_server
+
+        monkeypatch.setenv("MEMPALACE_MCP_IDLE_HOURS", "not-a-float")
+        assert mcp_server._mcp_idle_timeout_secs() == 0.0
 
     def test_cache_thread_safe(self, tmp_path, monkeypatch):
         """Concurrent _get_kg() for the same path yields one instance."""

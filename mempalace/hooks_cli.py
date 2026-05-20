@@ -304,7 +304,7 @@ def _mine_slot_timeout_secs() -> float:
             hours = float(raw)
             return max(0.0, hours) * 3600
         except ValueError:
-            pass
+            return 0.0
     return _MINE_TIMEOUT_HOURS_DEFAULT * 3600
 
 
@@ -363,9 +363,8 @@ def _mine_already_running(cmd: list[str]) -> bool:
 
     The PID file format is ``{pid} {unix_timestamp}`` (timestamp added in
     #1552 to detect wedged subprocesses).  Old-format files (bare ``{pid}``)
-    are treated as having a start time of 0 — effectively "infinitely old" —
-    so they are immediately considered stale once the configured timeout
-    elapses.
+    use the PID file's mtime as the approximate start time so a still-running
+    pre-upgrade mine is not immediately misclassified as stale.
 
     A process is considered stale (and this function returns False) when:
     - the PID is dead, OR
@@ -387,7 +386,16 @@ def _mine_already_running(cmd: list[str]) -> bool:
         return False
     timeout_secs = _mine_slot_timeout_secs()
     if timeout_secs > 0:
-        start_ts = float(parts[1]) if len(parts) > 1 and parts[1] else 0.0
+        if len(parts) > 1 and parts[1]:
+            try:
+                start_ts = float(parts[1])
+            except ValueError:
+                return False
+        else:
+            try:
+                start_ts = pid_file.stat().st_mtime
+            except OSError:
+                return True
         if time.time() - start_ts > timeout_secs:
             return False
     return True

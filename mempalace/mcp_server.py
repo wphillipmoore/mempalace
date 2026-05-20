@@ -194,7 +194,7 @@ def _mcp_idle_timeout_secs() -> float:
             hours = float(raw)
             return max(0.0, hours) * 3600
         except ValueError:
-            pass
+            return 0.0
     return _MCP_IDLE_HOURS_DEFAULT * 3600
 
 
@@ -2663,7 +2663,7 @@ def _start_idle_exit_watchdog() -> None:
     """Start a daemon thread that exits the process after an idle period.
 
     When no request has been handled for ``MEMPALACE_MCP_IDLE_HOURS``
-    (default 8 h), the thread calls ``sys.exit(0)`` so that stale MCP
+    (default 8 h), the thread terminates the process so that stale MCP
     servers from ended Claude Code sessions do not accumulate ChromaDB /
     HNSW file handles on Windows (#1552).
 
@@ -2684,7 +2684,7 @@ def _start_idle_exit_watchdog() -> None:
                     idle / 3600,
                     timeout / 3600,
                 )
-                sys.exit(0)
+                os._exit(0)
 
     t = threading.Thread(target=_watchdog, name="mcp-idle-watchdog", daemon=True)
     t.start()
