@@ -1,9 +1,9 @@
 # Format coverage — `mempalace mine --mode extract`
 
-**Proposed for mempalace 3.3.6.**
-**Target file (new):** `mempalace/format_miner.py`
-**Target file (edited, one-line addition):** `mempalace/cli.py` (dispatcher in `cmd_mine`)
-**New tests:** `tests/test_format_miner.py` (32 cases, all green; see `PROOF.md`).
+**Shipped in mempalace 3.3.6 (PR #1555).**
+**Module:** `mempalace/format_miner.py`
+**CLI entry:** `mempalace/cli.py` — `cmd_mine` dispatcher routes `--mode extract` here.
+**Tests:** `tests/test_format_miner.py` — covers all 14 fringe cases plus orchestrator behavior. See the file for the current test inventory (the count drifts as polish PRs land).
 
 ---
 

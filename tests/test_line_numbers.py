@@ -1,10 +1,7 @@
-"""Tests for virtual line numbering (proposed for mempalace 3.3.6).
+"""Tests for virtual line numbering (mempalace 3.3.6, integrated in PR #1555).
 
-Run from the proposal directory:
+Run with:
     pytest tests/test_line_numbers.py -v
-
-After integration into the mempalace package, change the import below to:
-    from mempalace.searcher import render_with_line_numbers, extract_line_range
 """
 
 from mempalace.searcher import (  # noqa: E402

@@ -1,14 +1,12 @@
-"""Tests for format_miner (proposed for mempalace 3.3.6).
+"""Tests for format_miner (mempalace 3.3.6, integrated in PR #1555).
 
-Covers all 13 fringe cases in the 3.3.6 format-coverage spec, plus the
-happy paths. MarkItDown is mocked throughout so tests run without the
-library installed — same discipline as the existing test_line_numbers.py.
+Covers all 14 fringe cases in the format-coverage spec plus orchestrator
+behavior. MarkItDown is mocked at the seam for most tests; a few guarded
+integration tests exercise live transformers when the optional extras are
+installed.
 
-Run from the proposal directory:
+Run with:
     pytest tests/test_format_miner.py -v
-
-After integration into the mempalace package, change the import below to:
-    from mempalace.format_miner import ...
 """
 
 from __future__ import annotations
@@ -980,7 +978,7 @@ def test_mine_formats_continues_after_per_file_error(_mine_formats_mocks):
     # Make chunk_text crash on the first file but succeed on the second.
     call_count = {"n": 0}
 
-    def chunk_text_first_fails(content, source_file):
+    def chunk_text_first_fails(content, source_file, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("simulated chunker explosion")
@@ -989,7 +987,11 @@ def test_mine_formats_continues_after_per_file_error(_mine_formats_mocks):
     with (
         patch("mempalace.format_miner.scan_formats", return_value=[bad, good]),
         patch("mempalace.format_miner._extract_via_markitdown", return_value="text"),
-        patch("mempalace.miner.chunk_text", side_effect=chunk_text_first_fails),
+        # Patch the module-level binding in format_miner (hoisted in the
+        # PR #1555 polish work — Gemini #3). The old patch target
+        # ``mempalace.miner.chunk_text`` no longer works because
+        # format_miner now binds chunk_text at its own module scope.
+        patch("mempalace.format_miner.chunk_text", side_effect=chunk_text_first_fails),
     ):
         # Must not raise
         mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"))
@@ -1232,3 +1234,290 @@ def test_pyproject_extract_extra_pulls_markitdown_format_subdeps():
             f"[extract] must include markitdown[{sub}]; "
             f"got bracketed extras: {bracketed!r}; full extract: {extract}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PR #1555 review polish — bot feedback items addressed post-merge.
+# Five behavioral changes; the trivial items (path expanduser, signature
+# annotations, docstring/doc updates) don't need their own RED tests.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_extract_text_nonexistent_regular_file_returns_unreadable_not_broken_symlink(
+    tmp_path: Path,
+):
+    """A non-existent REGULAR file (not a symlink) must return
+    ``SKIP_UNREADABLE``, not ``SKIP_BROKEN_SYMLINK``.
+
+    Per PR #1555 review (Copilot #8): the ``FileNotFoundError`` arm in
+    ``extract_text`` was unconditionally mapping to ``SKIP_BROKEN_SYMLINK``,
+    which is misleading when the path was a regular file that got deleted
+    between scan and extract. ``SKIP_BROKEN_SYMLINK`` should only fire
+    when ``p.is_symlink()`` is true.
+    """
+    p = tmp_path / "deleted.pdf"
+    assert not p.exists()
+    assert not p.is_symlink()
+    text, status = extract_text(p)
+    assert text is None
+    assert status == ExtractionStatus.SKIP_UNREADABLE, (
+        f"Expected SKIP_UNREADABLE for non-existent regular file (file was "
+        f"deleted between scan and extract); got {status}. "
+        f"SKIP_BROKEN_SYMLINK should only fire when the path is_symlink()."
+    )
+
+
+def test_mine_formats_passes_extract_mode_format_to_file_already_mined(monkeypatch, tmp_path: Path):
+    """``mine_formats`` must call ``file_already_mined`` with
+    ``extract_mode='format'`` so format-mode idempotency is scoped to its
+    own drawer set. Otherwise drawers from convo_miner / project miner
+    on the same source file falsely indicate "already mined" to the
+    format miner (and vice versa).
+
+    Per PR #1555 review (Copilot #11 + #12). Both call sites — the
+    pre-lock check in ``mine_formats`` and the post-lock recheck in
+    ``_file_chunks_locked`` — must pass the kwarg.
+    """
+    from mempalace import format_miner
+    from mempalace.format_miner import mine_formats
+
+    calls: list = []
+
+    def fake_check(collection, source_file, check_mtime=False, extract_mode=None):
+        calls.append(
+            {
+                "source_file": source_file,
+                "check_mtime": check_mtime,
+                "extract_mode": extract_mode,
+            }
+        )
+        return False  # never already mined — let the mine proceed
+
+    monkeypatch.setattr(format_miner, "file_already_mined", fake_check)
+
+    tmp = tmp_path / "src"
+    tmp.mkdir()
+    f = tmp / "x.pdf"
+    f.write_bytes(b"%PDF-1.4 stub")
+
+    fake_config = {
+        "wing": "wing_test",
+        "rooms": [{"name": "documents", "keywords": ["documents"]}],
+    }
+
+    with (
+        patch("mempalace.format_miner.scan_formats", return_value=[f]),
+        patch("mempalace.format_miner._extract_via_markitdown", return_value="long " * 50),
+        patch("mempalace.format_miner.load_config", return_value=fake_config),
+        patch("mempalace.format_miner.detect_room", return_value="documents"),
+    ):
+        mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"), wing="wing_test")
+
+    assert calls, "expected file_already_mined to be called at least once"
+    for call in calls:
+        assert call["extract_mode"] == "format", (
+            f"file_already_mined call missing extract_mode='format': {call}"
+        )
+
+
+def test_mine_formats_does_not_write_sentinel_for_skip_no_markitdown(monkeypatch, tmp_path: Path):
+    """Sentinel writing must be skipped when the status is a transient
+    "missing optional dependency" (``SKIP_NO_MARKITDOWN``,
+    ``SKIP_NO_STRIPRTF``, ``SKIP_MISSING_FORMAT_DEPS``). Otherwise the
+    file is permanently marked as "already mined" — installing the missing
+    extra later does NOT trigger a re-mine, which is a real user surprise.
+
+    Per PR #1555 review (Copilot #14).
+    """
+    from mempalace import format_miner
+    from mempalace.format_miner import mine_formats
+
+    register_calls: list = []
+
+    def fake_register(collection, source_file, wing, agent):
+        register_calls.append(source_file)
+
+    monkeypatch.setattr(format_miner, "_register_file", fake_register)
+
+    tmp = tmp_path / "src"
+    tmp.mkdir()
+    f = tmp / "y.pdf"
+    f.write_bytes(b"%PDF-1.4 stub")
+
+    fake_config = {
+        "wing": "wing_test",
+        "rooms": [{"name": "documents", "keywords": ["documents"]}],
+    }
+
+    # Force the extract path to raise ImportError so we hit SKIP_NO_MARKITDOWN.
+    with (
+        patch("mempalace.format_miner.scan_formats", return_value=[f]),
+        patch(
+            "mempalace.format_miner._extract_via_markitdown",
+            side_effect=ImportError("no markitdown"),
+        ),
+        patch("mempalace.format_miner.load_config", return_value=fake_config),
+        patch("mempalace.format_miner.detect_room", return_value="documents"),
+    ):
+        mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"), wing="wing_test")
+
+    assert str(f) not in register_calls, (
+        f"sentinel was written for SKIP_NO_MARKITDOWN file; should be skipped "
+        f"so installing markitdown later triggers a re-mine. "
+        f"register_calls={register_calls}"
+    )
+
+
+def test_mine_formats_does_not_write_sentinel_for_skip_missing_format_deps(
+    monkeypatch, tmp_path: Path
+):
+    """Same as the SKIP_NO_MARKITDOWN test but for SKIP_MISSING_FORMAT_DEPS
+    (raised when markitdown is installed but a per-format sub-extra like
+    ``markitdown[pdf]`` is missing).
+    """
+    from mempalace import format_miner
+    from mempalace.format_miner import mine_formats
+
+    register_calls: list = []
+
+    def fake_register(collection, source_file, wing, agent):
+        register_calls.append(source_file)
+
+    monkeypatch.setattr(format_miner, "_register_file", fake_register)
+
+    tmp = tmp_path / "src"
+    tmp.mkdir()
+    f = tmp / "z.pdf"
+    f.write_bytes(b"%PDF-1.4 stub")
+
+    fake_config = {
+        "wing": "wing_test",
+        "rooms": [{"name": "documents", "keywords": ["documents"]}],
+    }
+
+    class _FakeMissingDep(Exception):
+        pass
+
+    _FakeMissingDep.__name__ = "MissingDependencyException"
+
+    with (
+        patch("mempalace.format_miner.scan_formats", return_value=[f]),
+        patch(
+            "mempalace.format_miner._extract_via_markitdown",
+            side_effect=_FakeMissingDep("install markitdown[pdf]"),
+        ),
+        patch("mempalace.format_miner.load_config", return_value=fake_config),
+        patch("mempalace.format_miner.detect_room", return_value="documents"),
+    ):
+        mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"), wing="wing_test")
+
+    assert str(f) not in register_calls, (
+        f"sentinel was written for SKIP_MISSING_FORMAT_DEPS file; should be "
+        f"skipped so installing markitdown[<fmt>] later triggers a re-mine. "
+        f"register_calls={register_calls}"
+    )
+
+
+def test_mine_formats_catches_unexpected_exception_and_prints_summary(
+    monkeypatch, tmp_path: Path, capsys
+):
+    """If an unexpected error happens during mining (something the
+    per-file try/except doesn't catch — e.g., the topic-tunnel block
+    blowing up in a way the inner handler misses), mine_formats must
+    catch it at the outer level, print a partial-progress summary, and
+    clean up the PID file. Not crash with a traceback to the user.
+
+    Per PR #1555 review (Gemini #5).
+    """
+    from mempalace.format_miner import mine_formats
+
+    tmp = tmp_path / "src"
+    tmp.mkdir()
+    f = tmp / "exc.pdf"
+    f.write_bytes(b"%PDF-1.4 stub")
+
+    fake_config = {
+        "wing": "wing_test",
+        "rooms": [{"name": "documents", "keywords": ["documents"]}],
+    }
+
+    # Patch the file enumeration step to raise something unexpected —
+    # this fires OUTSIDE the per-file try/except. Without an outer
+    # ``except Exception`` clause, the traceback propagates and the
+    # summary block never prints.
+    def angry_enumerate(*args, **kwargs):
+        raise RuntimeError("simulated outer-loop explosion")
+
+    with (
+        patch("mempalace.format_miner.scan_formats", side_effect=angry_enumerate),
+        patch("mempalace.format_miner.load_config", return_value=fake_config),
+    ):
+        # Must NOT raise — outer except Exception should catch.
+        mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"), wing="wing_test")
+
+
+def test_mine_formats_threads_chunk_size_from_user_config(monkeypatch, tmp_path: Path):
+    """``mine_formats`` must pass ``chunk_size`` (and ``chunk_overlap``,
+    ``min_chunk_size``) from MempalaceConfig through to ``chunk_text``.
+    Currently the config is loaded only to validate readability; the
+    custom chunk parameters are never used during format-mode mining,
+    so users who tuned their config see no effect.
+
+    Per PR #1555 review (Gemini #3).
+    """
+    from mempalace import format_miner
+    from mempalace.format_miner import mine_formats
+
+    chunk_calls: list = []
+
+    def fake_chunk_text(content, source_file, **kwargs):
+        chunk_calls.append(kwargs)
+        return [{"content": content, "chunk_index": 0}]
+
+    monkeypatch.setattr(format_miner, "chunk_text", fake_chunk_text)
+
+    tmp = tmp_path / "src"
+    tmp.mkdir()
+    f = tmp / "config.pdf"
+    f.write_bytes(b"%PDF-1.4 stub")
+
+    fake_config = {
+        "wing": "wing_test",
+        "rooms": [{"name": "documents", "keywords": ["documents"]}],
+    }
+
+    # Inject custom config values via a fake MempalaceConfig.
+    class _FakeMempalaceConfig:
+        chunk_size = 1234
+        chunk_overlap = 56
+        min_chunk_size = 78
+
+        @property
+        def palace_path(self):
+            return str(tmp_path / "palace")
+
+    monkeypatch.setattr(format_miner, "MempalaceConfig", _FakeMempalaceConfig)
+
+    with (
+        patch("mempalace.format_miner.scan_formats", return_value=[f]),
+        patch("mempalace.format_miner._extract_via_markitdown", return_value="long " * 200),
+        patch("mempalace.format_miner.load_config", return_value=fake_config),
+        patch("mempalace.format_miner.detect_room", return_value="documents"),
+        patch("mempalace.format_miner.file_already_mined", return_value=False),
+    ):
+        mine_formats(format_dir=str(tmp), palace_path=str(tmp / "palace"), wing="wing_test")
+
+    assert chunk_calls, "expected chunk_text to be called at least once"
+    call = chunk_calls[0]
+    assert call.get("chunk_size") == 1234, (
+        f"chunk_text called without user's chunk_size from MempalaceConfig "
+        f"(got {call.get('chunk_size')}, expected 1234). kwargs={call}"
+    )
+    assert call.get("chunk_overlap") == 56, (
+        f"chunk_text called without user's chunk_overlap "
+        f"(got {call.get('chunk_overlap')}, expected 56). kwargs={call}"
+    )
+    assert call.get("min_chunk_size") == 78, (
+        f"chunk_text called without user's min_chunk_size "
+        f"(got {call.get('min_chunk_size')}, expected 78). kwargs={call}"
+    )

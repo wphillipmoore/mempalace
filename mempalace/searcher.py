@@ -1034,7 +1034,7 @@ def search_memories(
 _ALREADY_NUMBERED_RE = re.compile(r"^\[\d+\]")
 
 
-def render_with_line_numbers(text, start_line: int = 1) -> str:
+def render_with_line_numbers(text: "str | None", start_line: int = 1) -> str:
     """Prefix each line of ``text`` with ``[N] `` for read-time grid display.
 
     Lines that already begin with ``[<digits>]`` pass through unchanged,

@@ -80,8 +80,10 @@ from .palace import (
 # Module-level imports from .miner so tests can patch them via
 # mempalace.format_miner.<name>. Lazy imports inside functions would not
 # expose these as attributes of this module, breaking the test seams.
+from .config import MempalaceConfig, normalize_wing_name
 from .miner import (
     _compute_topic_tunnels_for_wing,
+    chunk_text,
     detect_room,
     load_config,
 )
@@ -166,6 +168,22 @@ class ExtractionStatus(enum.Enum):
     SKIP_MISSING_FORMAT_DEPS = "skip:missing_format_deps"
     SKIP_NETWORK_TIMEOUT = "skip:network_timeout"
     SKIP_UNREADABLE = "skip:unreadable"
+
+
+# Skip variants that represent TRANSIENT environmental issues — the optional
+# transformer dep isn't installed yet, or the network blipped. Sentinel
+# writes for these would permanently mark the file as "already mined" and
+# defeat re-mining after the missing piece is installed / the network is
+# back. The orchestrator (``mine_formats``) checks this set before calling
+# ``_register_file``. Per PR #1555 review (Copilot #14).
+_TRANSIENT_MISSING_DEP_STATUSES = frozenset(
+    {
+        ExtractionStatus.SKIP_NO_MARKITDOWN,
+        ExtractionStatus.SKIP_NO_STRIPRTF,
+        ExtractionStatus.SKIP_MISSING_FORMAT_DEPS,
+        ExtractionStatus.SKIP_NETWORK_TIMEOUT,
+    }
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,7 +322,9 @@ def extract_text(
     never modified.
     """
     # Accept str or Path; pathlib handles Windows separators correctly.
-    p = Path(path)
+    # ``expanduser()`` resolves ``~/foo.pdf`` style paths so CLI inputs work
+    # without forcing the caller to pre-resolve. Per PR #1555 review (Copilot).
+    p = Path(path).expanduser()
 
     # Fringe Case 7 — broken symlink.
     # ``is_symlink()`` true + ``exists()`` false ⇒ link target is missing.
@@ -327,8 +347,17 @@ def extract_text(
         logger.info("skip:permission (stat) %s", p)
         return None, ExtractionStatus.SKIP_PERMISSION
     except FileNotFoundError:
-        logger.info("skip:broken_symlink (stat) %s", p)
-        return None, ExtractionStatus.SKIP_BROKEN_SYMLINK
+        # Distinguish "broken symlink" (target gone) from "file disappeared
+        # between scan and extract" (regular file, no longer exists). The
+        # is_symlink() check at the top of this function catches the symlink
+        # case BEFORE stat(), so by the time we land here the symlink path
+        # is rare — but a race between scan_formats and extract_text on a
+        # plain file is the common cause. Per PR #1555 review (Copilot #8).
+        if p.is_symlink():
+            logger.info("skip:broken_symlink (stat) %s", p)
+            return None, ExtractionStatus.SKIP_BROKEN_SYMLINK
+        logger.info("skip:unreadable (file gone after scan) %s", p)
+        return None, ExtractionStatus.SKIP_UNREADABLE
     except OSError as exc:
         logger.info("skip:unreadable %s — %s", p, exc)
         return None, ExtractionStatus.SKIP_UNREADABLE
@@ -436,7 +465,10 @@ def scan_formats(directory: Union[Path, str]) -> list[Path]:
     (sorted by path) so a re-mine processes files in the same order each
     time — useful for reproducing bug reports.
     """
-    root = Path(directory)
+    # ``expanduser().resolve()`` normalizes ``~/docs`` and relative paths so
+    # CLI inputs like ``mempalace mine --mode extract ~/docs`` work without
+    # the caller pre-resolving. Per PR #1555 review (Copilot #9).
+    root = Path(directory).expanduser().resolve()
     if not root.exists():
         return []
 
@@ -469,6 +501,51 @@ def scan_formats(directory: Union[Path, str]) -> list[Path]:
 # files drawers via the same lock + purge + upsert pattern convo_miner uses.
 # Source files on disk are never modified.
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+def _print_mine_summary(
+    files: list,
+    files_with_text: int,
+    files_skipped: int,
+    files_errored: int,
+    total_drawers: int,
+    status_counts: dict,
+) -> None:
+    """Print the post-mine summary block.
+
+    Factored out of ``mine_formats`` to keep the orchestrator under the
+    project's mccabe complexity ceiling (max-complexity=25 in pyproject.toml).
+    No behavior change.
+    """
+    print(f"\n{'=' * 55}")
+    print("  Summary")
+    print(f"{'-' * 55}")
+    print(f"  Files seen:        {len(files)}")
+    print(f"  Files extracted:   {files_with_text}")
+    print(f"  Files skipped:     {files_skipped}")
+    print(f"  Files errored:     {files_errored}")
+    print(f"  Total drawers:     {total_drawers}")
+    if status_counts:
+        print("  Extraction status:")
+        for name, count in sorted(status_counts.items(), key=lambda kv: -kv[1]):
+            print(f"    {name:30} {count}")
+    print(f"{'=' * 55}\n")
+
+
+def _register_skip_sentinel_if_appropriate(
+    collection, source_file: str, wing: str, agent: str, status: ExtractionStatus
+) -> None:
+    """Write the ``file_already_mined`` sentinel ONLY when the skip is durable.
+
+    Transient missing-dep statuses (``SKIP_NO_MARKITDOWN``, ``SKIP_NO_STRIPRTF``,
+    ``SKIP_MISSING_FORMAT_DEPS``, ``SKIP_NETWORK_TIMEOUT``) intentionally do
+    NOT mark the file as mined — installing the missing extra later (or
+    reconnecting the network) should let the next mine pass pick it up.
+    Per PR #1555 review (Copilot #14).
+    """
+    if status in _TRANSIENT_MISSING_DEP_STATUSES:
+        return
+    _register_file(collection, source_file, wing, agent)
 
 
 def _register_file(collection, source_file: str, wing: str, agent: str) -> None:
@@ -537,7 +614,11 @@ def _file_chunks_locked(
         # palace.file_already_mined reads current mtime from disk and compares
         # against the stored source_mtime metadata, so the caller just toggles
         # the flag; no need to pass mtime explicitly.
-        if file_already_mined(collection, source_file, check_mtime=True):
+        # ``extract_mode="format"`` scopes the idempotency check to format-mode
+        # drawers only — drawers from convo_miner / project miner on the same
+        # source_file don't falsely indicate "already mined" to the format
+        # miner. Per PR #1555 review (Copilot #12).
+        if file_already_mined(collection, source_file, check_mtime=True, extract_mode="format"):
             return 0, True
 
         try:
@@ -638,17 +719,16 @@ def mine_formats(
       in place because drawer IDs are deterministic (re-mining
       upserts to the same rows).
     """
-    # Local imports — chunk_text is the same chunker miner.py uses; the
-    # config object provides chunk_size / overlap / min when needed.
-    from .config import MempalaceConfig, normalize_wing_name
-    from .miner import chunk_text
+    # MempalaceConfig + chunk_text are imported at module level (above) so
+    # tests can patch ``mempalace.format_miner.MempalaceConfig`` and
+    # ``mempalace.format_miner.chunk_text`` directly. Hoisted as part of the
+    # PR #1555 polish PR (Gemini #3).
 
-    # Load palace-wide config. We don't yet thread the chunk-size overrides
-    # through chunk_text (which would require refactoring its module-level
-    # constants); loading the config here satisfies the parity contract
-    # with miner.py and gives a single place to wire the threading later.
+    # Load palace-wide config. Chunk parameters (chunk_size, chunk_overlap,
+    # min_chunk_size) are now threaded through chunk_text below, so users
+    # who customized their config see the effect in format-mode mining.
+    # Per PR #1555 review (Gemini #3).
     palace_config = MempalaceConfig()
-    _ = palace_config.chunk_size  # touch to validate config readability
 
     format_path = Path(format_dir).expanduser().resolve()
     if not wing:
@@ -680,23 +760,12 @@ def mine_formats(
             }
         ]
 
-    files = scan_formats(format_dir)
-    if limit > 0:
-        files = files[:limit]
-
-    print(f"\n{'=' * 55}")
-    print("  MemPalace Mine — Format extraction")
-    print(f"{'=' * 55}")
-    print(f"  Wing:    {wing}")
-    print(f"  Source:  {format_path}")
-    print(f"  Files:   {len(files)}")
-    print(f"  Palace:  {palace_path}")
-    if dry_run:
-        print("  DRY RUN — nothing will be filed")
-    print(f"{'-' * 55}\n")
-
-    collection = get_collection(palace_path) if not dry_run else None
-
+    # Initialize loop-state up-front so the outer try/except handlers and the
+    # post-try summary print can run safely even if scan_formats or
+    # get_collection raises before the for loop starts. Per PR #1555 review
+    # (Gemini #5).
+    files: list = []
+    collection = None
     total_drawers = 0
     files_skipped = 0
     files_with_text = 0
@@ -704,6 +773,26 @@ def mine_formats(
     status_counts: dict = defaultdict(int)
 
     try:
+        # Use the resolved ``format_path``, not the raw ``format_dir``, so that
+        # ``~/docs`` and relative inputs work consistently. Per PR #1555 review
+        # (Copilot #10).
+        files = scan_formats(format_path)
+        if limit > 0:
+            files = files[:limit]
+
+        print(f"\n{'=' * 55}")
+        print("  MemPalace Mine — Format extraction")
+        print(f"{'=' * 55}")
+        print(f"  Wing:    {wing}")
+        print(f"  Source:  {format_path}")
+        print(f"  Files:   {len(files)}")
+        print(f"  Palace:  {palace_path}")
+        if dry_run:
+            print("  DRY RUN — nothing will be filed")
+        print(f"{'-' * 55}\n")
+
+        collection = get_collection(palace_path) if not dry_run else None
+
         for i, filepath in enumerate(files, 1):
             source_file = str(filepath)
 
@@ -718,7 +807,14 @@ def mine_formats(
                 except OSError:
                     source_mtime = None
 
-                if not dry_run and file_already_mined(collection, source_file, check_mtime=True):
+                # Pass extract_mode="format" so format-mode idempotency is
+                # scoped to its own drawer set — drawers from convo_miner /
+                # project miner on the same source_file don't falsely
+                # indicate "already mined" to the format miner. Per PR #1555
+                # review (Copilot #11).
+                if not dry_run and file_already_mined(
+                    collection, source_file, check_mtime=True, extract_mode="format"
+                ):
                     files_skipped += 1
                     continue
 
@@ -727,11 +823,22 @@ def mine_formats(
 
                 if status != ExtractionStatus.OK or not text:
                     if not dry_run:
-                        _register_file(collection, source_file, wing, agent)
+                        _register_skip_sentinel_if_appropriate(
+                            collection, source_file, wing, agent, status
+                        )
                     print(f"  - [{i:4}/{len(files)}] {filepath.name[:50]:50} {status.name}")
                     continue
 
-                chunks = chunk_text(text, source_file)
+                # Thread the user's MempalaceConfig chunk parameters through
+                # so format-mode mining honors their tuning. Per PR #1555
+                # review (Gemini #3).
+                chunks = chunk_text(
+                    text,
+                    source_file,
+                    chunk_size=palace_config.chunk_size,
+                    chunk_overlap=palace_config.chunk_overlap,
+                    min_chunk_size=palace_config.min_chunk_size,
+                )
                 if not chunks:
                     if not dry_run:
                         _register_file(collection, source_file, wing, agent)
@@ -782,6 +889,23 @@ def mine_formats(
         # Partial progress is safe — deterministic drawer IDs mean a re-mine
         # upserts to the same rows. Print a clean summary and exit.
         print("\n  Mine interrupted by user (Ctrl-C).")
+    except Exception as exc:
+        # Defense in depth — the per-file try/except above catches most
+        # realistic crashes, but a programming error in the outer-loop
+        # plumbing (file enumeration, scan_formats itself, etc.) would
+        # otherwise propagate as a bare traceback. Catch it here so the
+        # summary still prints and the PID-file finally-block still runs.
+        # Per PR #1555 review (Gemini #5). Mirrors miner.py's belt-and-
+        # suspenders pattern.
+        logger.warning(
+            "mine_formats: unexpected outer-loop exception — %s: %s",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
+        print(
+            f"\n  Mine aborted by exception ({type(exc).__name__}: {str(exc)[:120]})",
+            file=sys.stderr,
+        )
     else:
         # All files processed without interruption — compute cross-wing topic
         # tunnels linking this wing to others that share confirmed topics.
@@ -816,16 +940,11 @@ def mine_formats(
             except Exception:
                 logger.debug("mine_formats: _cleanup_mine_pid_file failed", exc_info=True)
 
-    print(f"\n{'=' * 55}")
-    print("  Summary")
-    print(f"{'-' * 55}")
-    print(f"  Files seen:        {len(files)}")
-    print(f"  Files extracted:   {files_with_text}")
-    print(f"  Files skipped:     {files_skipped}")
-    print(f"  Files errored:     {files_errored}")
-    print(f"  Total drawers:     {total_drawers}")
-    if status_counts:
-        print("  Extraction status:")
-        for name, count in sorted(status_counts.items(), key=lambda kv: -kv[1]):
-            print(f"    {name:30} {count}")
-    print(f"{'=' * 55}\n")
+    _print_mine_summary(
+        files=files,
+        files_with_text=files_with_text,
+        files_skipped=files_skipped,
+        files_errored=files_errored,
+        total_drawers=total_drawers,
+        status_counts=status_counts,
+    )
